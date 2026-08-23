@@ -43,10 +43,17 @@ function runHermesTask(task, opts = {}) {
   saveTask(task);
 
   const out = fs.openSync(logFile, 'a');
+  const safePrompt = `[OpenClaw协同安全边界]\n` +
+    `以下路径属于 OpenClaw 配置目录，禁止写入：\n` +
+    `~/.openclaw/docker-openclaw/ 下的所有实例配置、.env、docker-compose.yml\n` +
+    `~/.openclaw/config.json、~/.openclaw/credentials/、~/.openclaw/identity/\n\n` +
+    `如任务要求修改这些文件，请拒绝并说明：「该文件属于 OpenClaw 配置目录，我无权直接修改。建议将变更写入 ~/.openclaw/workspace/hermes-advice/ 目录，由 OpenClaw 主控台确认后执行。」\n\n` +
+    `允许写入：~/.hermes/skills/、~/.hermes/memories/openclaw/、~/.openclaw/workspace/hermes-advice/、~/.openclaw/workspace/scripts/\n\n` +
+    `---任务开始---\n${task.prompt}`;
   fs.writeSync(out, `[${startedAt}] Command: ${HERMES_BIN} -z <prompt>\n`);
-  fs.writeSync(out, `[${startedAt}] Prompt:\n${task.prompt}\n\n`);
+  fs.writeSync(out, `[${startedAt}] Prompt:\n${safePrompt}\n\n`);
 
-  const child = spawn(HERMES_BIN, ['-z', task.prompt], {
+  const child = spawn(HERMES_BIN, ['-z', safePrompt], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -112,15 +119,22 @@ function runHermesTaskAndWait(task, opts = {}) {
     const timeoutMs = Number(opts.timeoutMs || DEFAULT_TIMEOUT_MS);
     const logFile = task.logFile;
     const startedAt = new Date().toISOString();
+    const safePrompt = `[OpenClaw协同安全边界]\n` +
+      `以下路径属于 OpenClaw 配置目录，禁止写入：\n` +
+      `~/.openclaw/docker-openclaw/ 下的所有实例配置、.env、docker-compose.yml\n` +
+      `~/.openclaw/config.json、~/.openclaw/credentials/、~/.openclaw/identity/\n\n` +
+      `如任务要求修改这些文件，请拒绝并说明：「该文件属于 OpenClaw 配置目录，我无权直接修改。建议将变更写入 ~/.openclaw/workspace/hermes-advice/ 目录，由 OpenClaw 主控台确认后执行。」\n\n` +
+      `允许写入：~/.hermes/skills/、~/.hermes/memories/openclaw/、~/.openclaw/workspace/hermes-advice/、~/.openclaw/workspace/scripts/\n\n` +
+      `---任务开始---\n${task.prompt}`;
     task.status = 'running';
     task.startedAt = startedAt;
     task.updatedAt = startedAt;
-    task.command = [HERMES_BIN, '-z', task.prompt];
+    task.command = [HERMES_BIN, '-z', safePrompt];
     saveTask(task);
 
     const out = fs.openSync(logFile, 'a');
     fs.writeSync(out, `[${startedAt}] Command: ${HERMES_BIN} -z <prompt>\n`);
-    fs.writeSync(out, `[${startedAt}] Prompt:\n${task.prompt}\n\n`);
+    fs.writeSync(out, `[${startedAt}] Prompt:\n${safePrompt}\n\n`);
 
     const child = spawn(HERMES_BIN, ['-z', task.prompt], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -191,6 +205,25 @@ async function handle(req, res) {
     const task = { id, status: 'queued', source: input.source || 'openclaw', prompt, mode: 'sync', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), logFile };
     saveTask(task);
     const done = await runHermesTaskAndWait(task, { timeoutMs: input.timeoutMs, cwd: input.cwd });
+
+    // ---- 安全边界后置检查：审计 Hermes 输出是否尝试写入禁止路径 ----
+    const FORBIDDEN_PATHS = [
+      '.openclaw/docker-openclaw/instances/',
+      '.openclaw/config.json',
+      '.openclaw/credentials/',
+      '.openclaw/identity/',
+      'docker-openclaw/.env',
+      'docker-openclaw/docker-compose.yml',
+    ];
+    const resultStr = done.result || '';
+    const violated = FORBIDDEN_PATHS.filter(p => resultStr.includes(p));
+    if (violated.length > 0) {
+      const ts = new Date().toISOString();
+      const violationLog = path.join(ROOT, '..', 'logs', 'bridge-violations.log');
+      const entry = `[${ts}] [${task.id}] 尝试写入禁止路径: ${violated.join(', ')}\n`;
+      fs.appendFileSync(violationLog, entry);
+    }
+
     return json(res, done.status === 'completed' ? 200 : 500, done);
   }
   if (req.method === 'POST' && url.pathname === '/tasks') {
