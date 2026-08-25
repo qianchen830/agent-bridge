@@ -69,7 +69,7 @@ function safePrompt(prompt) {
 }
 
 function buildArgs(prompt, sessionId) {
-  const args = ['-z', prompt];
+  const args = ['-z', prompt, '--cli'];  // --cli 强制非交互 CLI 模式（无 TUI/PTY）
   if (sessionId) {
     args.push('--continue', sessionId, '--pass-session-id');
   }
